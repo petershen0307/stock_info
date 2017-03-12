@@ -13,7 +13,7 @@ import (
 )
 
 const urlTemplate string = "https://www.google.com/finance/getprices?q=%[1]s&x=TPE&i=%[2]d&p=%[3]s&f=d,c,h,l,o,v"
-const fileNameTemplate string = "%s_%d_%s.json"
+const fileNameTemplate string = "%s_%d_%s.%s"
 const columnFields string = "DATE,CLOSE,HIGH,LOW,OPEN,VOLUME"
 
 type queryInfo struct {
@@ -56,11 +56,65 @@ func fetchStockPrices(info queryInfo) {
 	}
 	defer response.Body.Close()
 
-	writeToFile(response.Body, info)
+	writeToFileCSV(response.Body, info)
 }
 
-func writeToFile(reader io.Reader, info queryInfo) {
-	fileName := fmt.Sprintf(fileNameTemplate, info.stockID, info.interval, info.duration)
+func writeToFileCSV(reader io.Reader, info queryInfo) {
+	fileName := fmt.Sprintf(fileNameTemplate, info.stockID, info.interval, info.duration, "csv")
+	fo, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		panic(err)
+	}
+	// Close fo on exit and check for its returned error
+	defer func() {
+		if err := fo.Close(); err != nil {
+			panic(err)
+		}
+	}()
+
+	scanner := bufio.NewScanner(reader)
+	if err := scanner.Err(); err != nil {
+		panic(err)
+	}
+	isData := false
+	var dateStart int64
+	for scanner.Scan() {
+		readStr := scanner.Text()
+		// check columns
+		if strings.Index(readStr, "COLUMNS") == 0 {
+			if 0 != strings.Compare(strings.Split(readStr, "=")[1], columnFields) {
+				fmt.Printf("Columns are [%s], not equal with [%s]\n", readStr, columnFields)
+				return
+			}
+			fo.WriteString(columnFields + "\n")
+			continue
+		}
+
+		// line start with "a" is the start date point
+		if strings.Index(readStr, "a") == 0 {
+			readStr = readStr[1:]
+			isData = true
+			// get the start date point
+			dateStart, err = strconv.ParseInt(strings.Split(readStr, ",")[0], 10, 64)
+			if err != nil {
+				panic(err)
+			}
+		}
+		if isData {
+			var price StockPrice
+			fmt.Sscanf(readStr, "%d,%f,%f,%f,%f,%d", &price.Date, &price.Close, &price.High, &price.Low, &price.Open, &price.Volume)
+			// calculate date time with start date point
+			if dateStart != price.Date {
+				price.Date = dateStart + price.Date*info.interval
+			}
+			writeStr := fmt.Sprintf("%d,%f,%f,%f,%f,%d\n", price.Date, price.Close, price.High, price.Low, price.Open, price.Volume)
+			fo.WriteString(writeStr)
+		}
+	}
+}
+
+func writeToFileJSON(reader io.Reader, info queryInfo) {
+	fileName := fmt.Sprintf(fileNameTemplate, info.stockID, info.interval, info.duration, "json")
 	fo, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
 		panic(err)
